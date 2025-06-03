@@ -12,8 +12,6 @@ import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, For
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { LockboxEntry, LockboxFormData } from '@/types';
 import { lockboxFormSchema, type LockboxFormValues } from './lockbox-form-schema';
-import { propertyNameAutocomplete } from '@/ai/flows/property-name-autocomplete';
-import { unitNumberAutocomplete } from '@/ai/flows/unit-number-autocomplete';
 import { useDebounce } from '@/hooks/use-debounce';
 import { getUniquePropertyNames, getUniqueUnitNumbers, getLockboxEntryByPropertyAndUnit } from '@/services/lockbox-service';
 import { useAuth } from '@/hooks/use-auth';
@@ -36,9 +34,6 @@ export function LockboxForm({ onSubmitSuccess, initialData, onCancelEdit }: Lock
   
   const [allPropertyNames, setAllPropertyNames] = useState<string[]>([]);
   const [currentUnitNumbers, setCurrentUnitNumbers] = useState<string[]>([]);
-
-  const [isPropertyLoading, setIsPropertyLoading] = useState(false);
-  const [isUnitLoading, setIsUnitLoading] = useState(false);
   const [dataPersistenceMessage, setDataPersistenceMessage] = useState<string | null>(null);
 
 
@@ -55,8 +50,8 @@ export function LockboxForm({ onSubmitSuccess, initialData, onCancelEdit }: Lock
 
   const propertyNameValue = form.watch('propertyName');
   const unitNumberValue = form.watch('unitNumber');
-  const debouncedPropertyName = useDebounce(propertyNameValue, 500);
-  const debouncedUnitNumber = useDebounce(unitNumberValue, 500);
+  const debouncedPropertyName = useDebounce(propertyNameValue, 300); // Reduced debounce for faster local filtering
+  const debouncedUnitNumber = useDebounce(unitNumberValue, 300); // Reduced debounce for faster local filtering
 
   useEffect(() => {
     if (user?.uid) {
@@ -85,62 +80,40 @@ export function LockboxForm({ onSubmitSuccess, initialData, onCancelEdit }: Lock
   }, [initialData, form, user?.uid]);
 
   useEffect(() => {
-    const fetchPropertySuggestions = async () => {
-      if (debouncedPropertyName && debouncedPropertyName.length > 1 && user?.uid) {
-        setIsPropertyLoading(true);
-        try {
-          const result = await propertyNameAutocomplete({
-            propertyNamePrefix: debouncedPropertyName,
-            existingPropertyNames: allPropertyNames,
-          });
-          if (result.suggestedPropertyName && result.confidenceScore > 0.5) {
-            setPropertySuggestions([result.suggestedPropertyName]);
-          } else {
-            // Fallback to simple client-side filtering if AI suggestion is not confident
-            setPropertySuggestions(allPropertyNames.filter(name => name.toLowerCase().startsWith(debouncedPropertyName.toLowerCase())));
-          }
-        } catch (error) {
-          console.error("Error fetching property suggestions:", error);
-          setPropertySuggestions([]);
-        } finally {
-          setIsPropertyLoading(false);
-        }
-      } else {
-        setPropertySuggestions([]);
-      }
-    };
-    fetchPropertySuggestions();
+    // Client-side property name suggestions
+    if (debouncedPropertyName && debouncedPropertyName.length > 0 && user?.uid) {
+      setPropertySuggestions(
+        allPropertyNames.filter(name => 
+          name.toLowerCase().includes(debouncedPropertyName.toLowerCase())
+        )
+      );
+    } else {
+      setPropertySuggestions([]);
+    }
   }, [debouncedPropertyName, allPropertyNames, user?.uid]);
 
   useEffect(() => {
-    const fetchUnitSuggestions = async () => {
+    // Client-side unit number suggestions
+    const fetchUnitsAndSuggest = async () => {
       if (debouncedUnitNumber && debouncedUnitNumber.length > 0 && propertyNameValue && user?.uid) {
-        setIsUnitLoading(true);
-        try {
-          // Fetch current unit numbers if not already fetched or property changed
-          if (form.formState.dirtyFields.propertyName || currentUnitNumbers.length === 0) {
-            const units = await getUniqueUnitNumbers(user.uid, propertyNameValue);
-            setCurrentUnitNumbers(units);
-          }
-          
-          const result = await unitNumberAutocomplete({
-            propertyName: propertyNameValue,
-            userInput: debouncedUnitNumber,
-            existingUnitNumbers: currentUnitNumbers,
-          });
-          setUnitSuggestions(result.suggestions);
-        } catch (error) {
-          console.error("Error fetching unit suggestions:", error);
-          setUnitSuggestions([]);
-        } finally {
-          setIsUnitLoading(false);
+        let unitsToFilter = currentUnitNumbers;
+        // Fetch current unit numbers if property changed or not yet fetched
+        if (form.formState.dirtyFields.propertyName || currentUnitNumbers.length === 0 || (initialData && propertyNameValue !== initialData.propertyName)) {
+           const fetchedUnits = await getUniqueUnitNumbers(user.uid, propertyNameValue);
+           setCurrentUnitNumbers(fetchedUnits);
+           unitsToFilter = fetchedUnits;
         }
+        setUnitSuggestions(
+          unitsToFilter.filter(unit => 
+            unit.toLowerCase().includes(debouncedUnitNumber.toLowerCase())
+          )
+        );
       } else {
         setUnitSuggestions([]);
       }
     };
-    fetchUnitSuggestions();
-  }, [debouncedUnitNumber, propertyNameValue, user?.uid, currentUnitNumbers.length, form.formState.dirtyFields.propertyName]);
+    fetchUnitsAndSuggest();
+  }, [debouncedUnitNumber, propertyNameValue, user?.uid, currentUnitNumbers, form.formState.dirtyFields.propertyName, initialData]);
 
   // Effect to check for existing data when property and unit are filled
   useEffect(() => {
@@ -197,6 +170,7 @@ export function LockboxForm({ onSubmitSuccess, initialData, onCancelEdit }: Lock
       form.reset();
       setPropertySuggestions([]);
       setUnitSuggestions([]);
+      setCurrentUnitNumbers([]); // Reset current unit numbers
       onSubmitSuccess();
     } catch (error) {
       console.error("Error submitting form:", error);
@@ -252,12 +226,11 @@ export function LockboxForm({ onSubmitSuccess, initialData, onCancelEdit }: Lock
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Property Name</FormLabel>
-                  <Popover open={propertySuggestions.length > 0 && field.value.length > 1 && form.formState.isDirty} onOpenChange={() => {}}>
+                  <Popover open={propertySuggestions.length > 0 && field.value.length > 0 && form.formState.isDirty} onOpenChange={() => {}}>
                     <PopoverTrigger asChild>
                       <FormControl>
                         <div className="relative">
                           <Input placeholder="e.g., Main Street Complex" {...field} autoComplete="off" onBlur={() => setTimeout(() => setPropertySuggestions([]), 150)} />
-                          {isPropertyLoading && <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin" />}
                         </div>
                       </FormControl>
                     </PopoverTrigger>
@@ -279,7 +252,6 @@ export function LockboxForm({ onSubmitSuccess, initialData, onCancelEdit }: Lock
                       <FormControl>
                          <div className="relative">
                             <Input placeholder="e.g., Apt 101, Unit B" {...field} autoComplete="off" onBlur={() => setTimeout(() => setUnitSuggestions([]), 150)} disabled={!propertyNameValue}/>
-                            {isUnitLoading && <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin" />}
                          </div>
                       </FormControl>
                     </PopoverTrigger>
@@ -334,7 +306,7 @@ export function LockboxForm({ onSubmitSuccess, initialData, onCancelEdit }: Lock
           </CardContent>
           <CardFooter className="flex justify-between">
             {initialData && onCancelEdit && (
-              <Button type="button" variant="outline" onClick={() => { onCancelEdit(); form.reset(); setDataPersistenceMessage(null); }}>
+              <Button type="button" variant="outline" onClick={() => { onCancelEdit(); form.reset(); setDataPersistenceMessage(null); setPropertySuggestions([]); setUnitSuggestions([]); setCurrentUnitNumbers([]); }}>
                 Cancel
               </Button>
             )}

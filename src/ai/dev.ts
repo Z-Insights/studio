@@ -1,5 +1,6 @@
+
 import { config } from 'dotenv';
 config();
 
-import '@/ai/flows/property-name-autocomplete.ts';
-import '@/ai/flows/unit-number-autocomplete.ts';
+// Removed imports for property-name-autocomplete.ts and unit-number-autocomplete.ts
+// as AI autocomplete functionality has been removed from the form.
